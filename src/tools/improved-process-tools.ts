@@ -10,6 +10,7 @@ import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getFastShellForSimpleCommand, getPluginPerformanceMode, getPollDelayMs } from '../performance-mode.js';
 
 // Get the directory where the MCP is installed (for ES module imports)
 const __filename = fileURLToPath(import.meta.url);
@@ -152,6 +153,10 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
 
   let shellUsed: string | undefined = parsed.data.shell;
 
+  if (!shellUsed && getPluginPerformanceMode() === 'optimized-plugin') {
+    shellUsed = getFastShellForSimpleCommand(commandToRun) ?? undefined;
+  }
+
   if (!shellUsed) {
     const config = await configManager.getConfig();
     if (config.defaultShell) {
@@ -269,41 +274,29 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
     // Wait for new output to arrive (only for "new output" reads, not absolute/tail)
     const waitForOutput = (): Promise<void> => {
       return new Promise((resolve) => {
-        // Check if there's already new output
-        const currentLines = terminalManager.getOutputLineCount(pid) || 0;
-        if (currentLines > session.lastReadIndex) {
-          resolve();
-          return;
-        }
-
         let resolved = false;
-        let interval: NodeJS.Timeout | null = null;
-        let timeout: NodeJS.Timeout | null = null;
-
-        const cleanup = () => {
-          if (interval) clearInterval(interval);
-          if (timeout) clearTimeout(timeout);
-        };
+        let timer: NodeJS.Timeout | null = null;
+        const deadline = Date.now() + timeout_ms;
+        const mode = getPluginPerformanceMode();
 
         const resolveOnce = () => {
           if (resolved) return;
           resolved = true;
-          cleanup();
+          if (timer) clearTimeout(timer);
           resolve();
         };
 
-        // Poll for new output
-        interval = setInterval(() => {
+        const poll = () => {
+          if (resolved) return;
           const newLineCount = terminalManager.getOutputLineCount(pid) || 0;
-          if (newLineCount > session.lastReadIndex) {
+          if (newLineCount > session.lastReadIndex || Date.now() >= deadline) {
             resolveOnce();
+            return;
           }
-        }, 50);
+          timer = setTimeout(poll, getPollDelayMs(Date.now() - startTime, mode));
+        };
 
-        // Timeout
-        timeout = setTimeout(() => {
-          resolveOnce();
-        }, timeout_ms);
+        poll();
       });
     };
 
@@ -428,7 +421,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
   let firstOutputTime: number | undefined;
   let lastOutputTime: number | undefined;
   const outputEvents: any[] = [];
-  let exitReason: 'early_exit_quick_pattern' | 'early_exit_periodic_check' | 'process_finished' | 'timeout' | 'no_wait' = 'timeout';
+  let exitReason: 'early_exit_quick_pattern' | 'early_exit_periodic_check' | 'early_exit_adaptive_check' | 'process_finished' | 'timeout' | 'no_wait' = 'timeout';
 
   try {
     capture('server_interact_with_process', {
@@ -486,28 +479,25 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     const waitForResponse = (): Promise<void> => {
       return new Promise((resolve) => {
         let resolved = false;
-        let attempts = 0;
-        const pollIntervalMs = 50; // Poll every 50ms for faster response
-        const maxAttempts = Math.ceil(timeout_ms / pollIntervalMs);
-        let interval: NodeJS.Timeout | null = null;
-        let lastOutputLength = 0; // Track output length to detect new output
+        let timer: NodeJS.Timeout | null = null;
+        let lastOutputLength = 0;
+        const deadline = Date.now() + timeout_ms;
+        const mode = getPluginPerformanceMode();
 
-        let resolveOnce = () => {
+        const resolveOnce = () => {
           if (resolved) return;
           resolved = true;
-          if (interval) clearInterval(interval);
+          if (timer) clearTimeout(timer);
           resolve();
         };
 
-        // Fast-polling check - check every 50ms for quick responses
-        interval = setInterval(() => {
+        const poll = () => {
           if (resolved) return;
 
-          // Use snapshot-based reading to handle REPL prompt line appending
-          const newOutput = outputSnapshot 
+          const newOutput = outputSnapshot
             ? terminalManager.getOutputSinceSnapshot(pid, outputSnapshot)
             : terminalManager.getNewOutput(pid);
-            
+
           if (newOutput && newOutput.length > lastOutputLength) {
             const now = Date.now();
             if (!firstOutputTime) firstOutputTime = now;
@@ -517,32 +507,31 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
               outputEvents.push({
                 timestamp: now,
                 deltaMs: now - startTime,
-                source: 'periodic_poll',
+                source: mode === 'optimized-plugin' ? 'adaptive_poll' : 'periodic_poll',
                 length: newOutput.length - lastOutputLength,
                 snippet: newOutput.slice(lastOutputLength, lastOutputLength + 50).replace(/\n/g, '\\n')
               });
+              if (outputEvents.length > 1000) outputEvents.shift();
             }
 
-            output = newOutput; // Replace with full output since snapshot
+            output = newOutput;
             lastOutputLength = newOutput.length;
-
-            // Analyze current state
             processState = analyzeProcessState(output, pid);
 
-            // Exit early if we detect the process is waiting for input
             if (processState.isWaitingForInput) {
               earlyExit = true;
-              exitReason = 'early_exit_periodic_check';
-
+              exitReason = mode === 'optimized-plugin'
+                ? 'early_exit_adaptive_check'
+                : 'early_exit_periodic_check';
               if (verbose_timing && outputEvents.length > 0) {
-                outputEvents[outputEvents.length - 1].matchedPattern = 'periodic_check';
+                outputEvents[outputEvents.length - 1].matchedPattern = mode === 'optimized-plugin'
+                  ? 'adaptive_check'
+                  : 'periodic_check';
               }
-
               resolveOnce();
               return;
             }
 
-            // Also exit if process finished
             if (processState.isFinished) {
               exitReason = 'process_finished';
               resolveOnce();
@@ -550,12 +539,16 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
             }
           }
 
-          attempts++;
-          if (attempts >= maxAttempts) {
+          const now = Date.now();
+          if (now >= deadline) {
             exitReason = 'timeout';
             resolveOnce();
+            return;
           }
-        }, pollIntervalMs);
+          timer = setTimeout(poll, getPollDelayMs(now - startTime, mode));
+        };
+
+        poll();
       });
     };
     

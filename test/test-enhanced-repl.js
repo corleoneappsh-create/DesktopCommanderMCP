@@ -7,19 +7,16 @@ import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } 
  * @returns {string} 'python3' or 'python'
  */
 function getPythonCommand() {
-  try {
-    // Prefer python3 if available
-    execSync('command -v python3', { stdio: 'ignore' });
-    return 'python3';
-  } catch (e) {
-    // Fallback to python
+  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const candidate of candidates) {
     try {
-      execSync('command -v python', { stdio: 'ignore' });
-      return 'python';
-    } catch (error) {
-      throw new Error('Neither python3 nor python command is available in the PATH');
+      execSync(`${candidate} --version`, { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // Ignore launch aliases that exist but cannot execute, then try the next name.
     }
   }
+  throw new Error('Neither python3 nor python command is available in the PATH');
 }
 
 
@@ -37,7 +34,7 @@ async function testEnhancedREPL() {
   const result = await startProcess({
     command: `${pythonCommand} -i`,
     timeout_ms: 10000,
-    shell: '/bin/bash'
+    shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
   });
   
   console.log('Result from start_process:', result);
