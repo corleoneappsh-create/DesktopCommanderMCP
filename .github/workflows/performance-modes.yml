@@ -29,7 +29,18 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ripgrep -y --no-progress
+      - run: rg --version
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: node test/test-performance-mode.js
       - run: node test/test-search-deduplication.js
@@ -50,5 +61,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: rg --version
+      - run: npm ci --ignore-scripts
       - run: npm test
