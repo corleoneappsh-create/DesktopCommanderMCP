@@ -22,6 +22,7 @@ function pidOf(result) {
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-line-worker-'));
 const worker = path.join(tempDir, 'line-worker.mjs');
 await fs.writeFile(worker, `
+process.stdout.write('READY>\\n');
 process.stdin.setEncoding('utf8');
 let buffer = '';
 process.stdin.on('data', chunk => {
@@ -38,8 +39,10 @@ process.stdin.on('data', chunk => {
 try {
   for (const mode of ['legacy-plugin', 'optimized-plugin']) {
     process.env.DC_PLUGIN_MODE = mode;
-    const started = await startProcess({ command: `node "${worker}"`, timeout_ms: 150 });
+    const started = await startProcess({ command: `node "${worker}"`, timeout_ms: 10000 });
+    assert.match(textOf(started), /READY>/, `${mode} worker did not become ready`);
     const pid = pidOf(started);
+    await readProcessOutput({ pid, offset: 0, length: 20, timeout_ms: 0 });
     try {
       for (let i = 0; i < 10; i++) {
         const marker = `RDC_${mode}_${i}`;

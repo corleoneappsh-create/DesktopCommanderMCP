@@ -481,13 +481,19 @@ export class TerminalManager {
       session.outputLines[session.outputLines.length - 1] += lines[0];
       index = 1;
     } else {
+      // Preserve the historical trailing-empty-line pagination contract, but
+      // replace its sentinel before the next chunk instead of mutating it after
+      // the reader has advanced past it.
+      if (session.outputLines.at(-1) === '') {
+        session.outputLines.pop();
+        session.lastReadIndex = Math.min(session.lastReadIndex, session.outputLines.length);
+      }
       session.outputLines.push(lines[0]);
       index = 1;
     }
 
     for (; index < lines.length; index++) {
-      const isTrailingEmpty = index === lines.length - 1 && endsWithNewline && lines[index] === '';
-      if (!isTrailingEmpty) session.outputLines.push(lines[index]);
+      session.outputLines.push(lines[index]);
     }
 
     session.hasOpenLine = !endsWithNewline;

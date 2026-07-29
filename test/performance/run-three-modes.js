@@ -45,6 +45,7 @@ async function pluginCommand(mode) {
 async function makeWorker(tempDir) {
   const worker = path.join(tempDir, 'benchmark-worker.mjs');
   await fs.writeFile(worker, `
+process.stdout.write('READY>\\n');
 process.stdin.setEncoding('utf8');
 let buffer = '';
 process.stdin.on('data', chunk => {
@@ -65,19 +66,26 @@ async function directStream(worker, repetitions) {
   child.stdout.setEncoding('utf8');
   let buffer = '';
   const waiters = [];
+  const queuedLines = [];
+  const nextLine = () => queuedLines.length > 0
+    ? Promise.resolve(queuedLines.shift())
+    : new Promise(resolve => waiters.push(resolve));
   child.stdout.on('data', chunk => {
     buffer += chunk;
     let index;
     while ((index = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, index);
       buffer = buffer.slice(index + 1);
-      waiters.shift()?.(line);
+      const waiter = waiters.shift();
+      if (waiter) waiter(line);
+      else queuedLines.push(line);
     }
   });
+  assert.equal(await nextLine(), 'READY>');
   const times = [];
   for (let i = 0; i < repetitions; i++) {
     const marker = `DIRECT_${i}`;
-    const received = new Promise(resolve => waiters.push(resolve));
+    const received = nextLine();
     const started = performance.now();
     child.stdin.write(marker + '\n');
     assert.equal(await received, marker);
@@ -89,9 +97,11 @@ async function directStream(worker, repetitions) {
 
 async function pluginStream(mode, worker, repetitions) {
   process.env.DC_PLUGIN_MODE = mode;
-  const startedProcess = await startProcess({ command: `node "${worker}"`, timeout_ms: 120 });
+  const startedProcess = await startProcess({ command: `node "${worker}"`, timeout_ms: 10000 });
+  assert.match(textOf(startedProcess), /READY>/);
   const pid = pidOf(startedProcess);
   assert.ok(Number.isInteger(pid));
+  await readProcessOutput({ pid, offset: 0, length: 20, timeout_ms: 0 });
   const times = [];
   try {
     for (let i = 0; i < repetitions; i++) {
