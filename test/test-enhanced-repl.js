@@ -7,13 +7,13 @@ import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } 
  * @returns {string} 'python3' or 'python'
  */
 function getPythonCommand() {
-  const locator = process.platform === 'win32' ? 'where' : 'command -v';
-  for (const candidate of ['python3', 'python']) {
+  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const candidate of candidates) {
     try {
-      execSync(`${locator} ${candidate}`, { stdio: 'ignore' });
+      execSync(`${candidate} --version`, { stdio: 'ignore' });
       return candidate;
     } catch {
-      // Try the next executable name.
+      // Ignore launch aliases that exist but cannot execute, then try the next name.
     }
   }
   throw new Error('Neither python3 nor python command is available in the PATH');
