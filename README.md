@@ -1138,3 +1138,7 @@ For complete details, see our [Privacy Policy](PRIVACY.md).
 ## License
 
 MIT
+
+## Performance profiles (v0.2.47)
+
+Desktop Commander now includes reproducible `direct`, `legacy-plugin`, and `optimized-plugin` test modes. The optimized profile is the default and adds safe fast-shell routing, adaptive process polling, duplicate-search coalescing, and lossless streaming output. See [docs/performance-modes.md](docs/performance-modes.md) for usage, tests, benchmark reports, and rollback instructions.

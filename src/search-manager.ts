@@ -6,6 +6,7 @@ import { capture } from './utils/capture.js';
 import { getRipgrepPath } from './utils/ripgrep-resolver.js';
 import { isExcelFile } from './utils/files/index.js';
 import PizZip from 'pizzip';
+import { isOptimizedPluginMode } from './performance-mode.js';
 
 export interface SearchResult {
   file: string;
@@ -24,6 +25,7 @@ export interface SearchSession {
   startTime: number;
   lastReadTime: number;
   options: SearchSessionOptions;
+  searchKey?: string;
   buffer: string;  // For processing incomplete JSON lines
   totalMatches: number;
   totalContextLines: number;  // Track context lines separately
@@ -49,6 +51,7 @@ export interface SearchSessionOptions {
  * Supports both file search and content search with progressive results
  */export class SearchManager {
   private sessions = new Map<string, SearchSession>();
+  private pendingStarts = new Map<string, Promise<void>>();
   private sessionCounter = 0;
 
   /**
@@ -63,11 +66,64 @@ export interface SearchSessionOptions {
     results: SearchResult[];
     totalResults: number;
     runtime: number;
+    reused?: boolean;
   }> {
-    const sessionId = `search_${++this.sessionCounter}_${Date.now()}`;
-    
     // Validate path first
     const validPath = await validatePath(options.rootPath);
+    const optimized = isOptimizedPluginMode();
+    let searchKey: string | undefined;
+    let releasePendingStart: (() => void) | undefined;
+
+    const findReusableSession = () => {
+      if (!searchKey) return undefined;
+      return Array.from(this.sessions.values()).find(existing =>
+        !existing.isComplete && !existing.isError && existing.searchKey === searchKey
+      );
+    };
+
+    if (optimized) {
+      searchKey = JSON.stringify({
+        rootPath: validPath,
+        pattern: options.pattern,
+        searchType: options.searchType,
+        filePattern: options.filePattern ?? null,
+        ignoreCase: options.ignoreCase !== false,
+        maxResults: options.maxResults ?? null,
+        contextLines: options.contextLines ?? 5,
+        includeHidden: options.includeHidden === true,
+        literalSearch: options.literalSearch === true,
+        earlyTermination: options.earlyTermination ?? null,
+        timeout: options.timeout ?? null
+      });
+
+      const pending = this.pendingStarts.get(searchKey);
+      if (pending) await pending;
+
+      const existing = findReusableSession();
+      if (existing) {
+        existing.lastReadTime = Date.now();
+        return {
+          sessionId: existing.id,
+          isComplete: existing.isComplete,
+          isError: existing.isError,
+          results: [...existing.results],
+          totalResults: existing.totalMatches,
+          runtime: Date.now() - existing.startTime,
+          reused: true
+        };
+      }
+
+      const pendingStart = new Promise<void>(resolve => { releasePendingStart = resolve; });
+      this.pendingStarts.set(searchKey, pendingStart);
+    }
+
+    const releaseStartLock = () => {
+      releasePendingStart?.();
+      if (searchKey) this.pendingStarts.delete(searchKey);
+      releasePendingStart = undefined;
+    };
+
+    const sessionId = `search_${++this.sessionCounter}_${Date.now()}`;
 
     // Build ripgrep arguments
     const args = this.buildRipgrepArgs({ ...options, rootPath: validPath });
@@ -77,6 +133,7 @@ export interface SearchSessionOptions {
     try {
       rgPath = await getRipgrepPath();
     } catch (err) {
+      releaseStartLock();
       throw new Error(`Failed to locate ripgrep binary: ${err instanceof Error ? err.message : String(err)}`);
     }
     
@@ -84,6 +141,7 @@ export interface SearchSessionOptions {
     const rgProcess = spawn(rgPath, args, { windowsHide: true });  // Prevent visible console windows on Windows
     
     if (!rgProcess.pid) {
+      releaseStartLock();
       throw new Error('Failed to start ripgrep process');
     }
 
@@ -97,12 +155,14 @@ export interface SearchSessionOptions {
       startTime: Date.now(),
       lastReadTime: Date.now(),
       options,
+      searchKey,
       buffer: '',
       totalMatches: 0,
       totalContextLines: 0
     };
 
     this.sessions.set(sessionId, session);
+    releaseStartLock();
 
     // Set up process event handlers
     this.setupProcessHandlers(session);
@@ -1018,5 +1078,12 @@ function startCleanupIfNeeded(): void {
     setTimeout(() => {
       searchManager.cleanupSessions();
     }, 1000);
+  }
+}
+/** Stop the global cleanup timer. Exported for deterministic tests and shutdown. */
+export function stopSearchManagerCleanup(): void {
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
   }
 }

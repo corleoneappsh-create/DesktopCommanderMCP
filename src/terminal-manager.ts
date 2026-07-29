@@ -5,6 +5,7 @@ import { DEFAULT_COMMAND_TIMEOUT } from './config.js';
 import { configManager } from './config-manager.js';
 import {capture} from "./utils/capture.js";
 import { analyzeProcessState } from './utils/process-detection.js';
+import { isOptimizedPluginMode } from './performance-mode.js';
 
 /**
  * Standard Windows PATHEXT value, used to repair a corrupted PATHEXT before
@@ -270,6 +271,7 @@ export class TerminalManager {
       pid: childProcess.pid,
       process: childProcess,
       outputLines: [],           // Line-based buffer
+      hasOpenLine: false,        // Last entry can still receive a partial chunk
       lastReadIndex: 0,          // Track where "new" output starts
       isBlocked: false,
       startTime: new Date(),
@@ -389,6 +391,16 @@ export class TerminalManager {
             snippet: text.slice(0, 50).replace(/\n/g, '\\n')
           });
         }
+
+        // Python and some other REPLs emit their prompt through stderr.
+        if (isOptimizedPluginMode() && quickPromptPatterns.test(text)) {
+          session.isBlocked = true;
+          exitReason = 'early_exit_quick_pattern';
+          if (collectTiming && outputEvents.length > 0) {
+            outputEvents[outputEvents.length - 1].matchedPattern = 'quick_pattern';
+          }
+          resolveOnce({ pid: childProcess.pid!, output, isBlocked: true });
+        }
       });
 
       // Periodic comprehensive check every 100ms
@@ -456,34 +468,33 @@ export class TerminalManager {
   private appendToLineBuffer(session: TerminalSession, text: string): void {
     if (!text) return;
 
-    // Split text into lines, keeping track of whether text ends with newline
     const lines = text.split('\n');
+    const endsWithNewline = text.endsWith('\n');
+    let index = 0;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const isLastFragment = i === lines.length - 1;
-      const endsWithNewline = text.endsWith('\n');
-
-      if (session.outputLines.length === 0) {
-        // First line ever
-        session.outputLines.push(line);
-      } else if (i === 0) {
-        // First fragment - append to last line (might be partial)
-        session.outputLines[session.outputLines.length - 1] += line;
-      } else {
-        // Subsequent lines - add as new lines
-        session.outputLines.push(line);
+    if (session.hasOpenLine && session.outputLines.length > 0) {
+      // If the partial line was already read, rewind so its completed form is
+      // visible instead of silently mutating behind lastReadIndex.
+      if (session.lastReadIndex >= session.outputLines.length) {
+        session.lastReadIndex = Math.max(0, session.outputLines.length - 1);
       }
+      session.outputLines[session.outputLines.length - 1] += lines[0];
+      index = 1;
+    } else {
+      session.outputLines.push(lines[0]);
+      index = 1;
     }
-    // Appended text contributes exactly its length to the joined buffer
-    // (its newlines become the join separators).
+
+    for (; index < lines.length; index++) {
+      const isTrailingEmpty = index === lines.length - 1 && endsWithNewline && lines[index] === '';
+      if (!isTrailingEmpty) session.outputLines.push(lines[index]);
+    }
+
+    session.hasOpenLine = !endsWithNewline;
     session.bufferedChars += text.length;
 
-    // A process printing without newlines grows a single line forever, which
-    // eviction can't bound — force-split so no line exceeds MAX_LINE_CHARS.
-    // Each inserted break adds one separator to the joined length.
     let lastIndex = session.outputLines.length - 1;
-    while (session.outputLines[lastIndex].length > MAX_LINE_CHARS) {
+    while (lastIndex >= 0 && session.outputLines[lastIndex].length > MAX_LINE_CHARS) {
       const overlong = session.outputLines[lastIndex];
       session.outputLines[lastIndex] = overlong.slice(0, MAX_LINE_CHARS);
       session.outputLines.push(overlong.slice(MAX_LINE_CHARS));
@@ -491,12 +502,9 @@ export class TerminalManager {
       lastIndex++;
     }
 
-    // Enforce the per-session cap by evicting the oldest lines. Keeps the
-    // buffer far below V8's max string length so concatenation and join()
-    // can never throw "Invalid string length" and kill the server.
     while (session.bufferedChars > MAX_BUFFERED_OUTPUT_CHARS && session.outputLines.length > 1) {
       const dropped = session.outputLines.shift()!;
-      const droppedJoinedChars = dropped.length + 1; // +1 for its join separator
+      const droppedJoinedChars = dropped.length + 1;
       session.bufferedChars -= droppedJoinedChars;
       session.evictedChars += droppedJoinedChars;
       session.evictedLines++;

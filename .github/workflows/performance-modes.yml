@@ -1,0 +1,53 @@
+name: Performance modes
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  focused-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 24
+          - os: macos-latest
+            node: 22
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node test/test-performance-mode.js
+      - run: node test/test-search-deduplication.js
+      - run: node test/test-streaming-output-integrity.js
+      - run: node test/test-optimized-launchers.js
+      - run: npm run test:three-modes
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/performance/*.json
+
+  full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test

@@ -18,6 +18,7 @@ export interface TerminalSession {
   pid: number;
   process: ChildProcess;
   outputLines: string[];      // Line-based buffer (persistent, capped — oldest lines evicted)
+  hasOpenLine: boolean;       // Whether the final entry can still receive a partial chunk
   lastReadIndex: number;      // Track where "new" output starts for default reads
   isBlocked: boolean;
   startTime: Date;
