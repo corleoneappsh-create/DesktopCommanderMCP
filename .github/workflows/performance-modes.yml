@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci --ignore-scripts
+      - run: npm ci
       - run: npm run build
       - run: node test/test-performance-mode.js
       - run: node test/test-search-deduplication.js
@@ -49,5 +49,5 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --ignore-scripts
+      - run: npm ci
       - run: npm test
