@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SearchManager, stopSearchManagerCleanup } from '../dist/search-manager.js';
 
-const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-search-dedup-'));
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const testOutputRoot = path.join(projectRoot, 'test', 'test_output');
+await fs.mkdir(testOutputRoot, { recursive: true });
+const tempDir = await fs.mkdtemp(path.join(testOutputRoot, 'dc-search-dedup-'));
 await fs.writeFile(path.join(tempDir, 'corpus.txt'), Buffer.alloc(16 * 1024 * 1024, 97));
 const options = {
   rootPath: tempDir,

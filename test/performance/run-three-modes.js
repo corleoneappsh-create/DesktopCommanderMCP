@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
@@ -137,7 +136,9 @@ async function pluginDedup(mode, corpusDir) {
 }
 
 export async function runThreeModeBenchmark({ enforce = false, repetitions = 7 } = {}) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-three-mode-'));
+  const testOutputRoot = path.join(projectRoot, 'test', 'test_output');
+  await fs.mkdir(testOutputRoot, { recursive: true });
+  const tempDir = await fs.mkdtemp(path.join(testOutputRoot, 'dc-three-mode-'));
   const corpusDir = path.join(tempDir, 'corpus');
   await fs.mkdir(corpusDir);
   await fs.writeFile(path.join(corpusDir, 'large.txt'), Buffer.alloc(16 * 1024 * 1024, 98));
