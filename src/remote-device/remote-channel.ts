@@ -38,7 +38,7 @@ export class RemoteChannel {
 
     // Store subscription parameters for channel recreation
     private deviceId: string | null = null;
-    private onToolCall: ((payload: any) => void) | null = null;
+    private onToolCall: ((payload: any) => void | Promise<void>) | null = null;
 
     // Track last device status to prevent duplicate log messages
     private lastDeviceStatus: 'online' | 'offline' = 'offline';
@@ -55,6 +55,34 @@ export class RemoteChannel {
     get user(): User | null { return this._user; }
 
 
+    private async captureSafely(event: string, data: any): Promise<void> {
+        try {
+            await captureRemote(event, data);
+        } catch (error: any) {
+            console.debug(`[DEBUG] Telemetry ${event} was not delivered:`, error?.message || error);
+        }
+    }
+
+    private runBackground(operation: Promise<unknown>, context: string): void {
+        void operation.catch((error: any) => {
+            console.warn(`[remote-channel] ${context} failed:`, error?.message || error);
+        });
+    }
+
+
+    private dispatchToolCall(payload: any): void {
+        if (!this.onToolCall) return;
+        try {
+            const result = this.onToolCall(payload);
+            if (result && typeof (result as Promise<void>).then === 'function') {
+                this.runBackground(Promise.resolve(result), 'tool callback');
+            }
+        } catch (error: any) {
+            console.warn('[remote-channel] tool callback threw:', error?.message || error);
+        }
+    }
+
+
     initialize(url: string, key: string): void {
         this.client = createClient(url, key);
     }
@@ -69,7 +97,7 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to set session:', error.message);
-            await captureRemote('remote_channel_set_session_error', { error });
+            await this.captureSafely('remote_channel_set_session_error', { error });
             return { error };
         }
 
@@ -77,14 +105,14 @@ export class RemoteChannel {
         const { data: { user }, error: userError } = await this.client.auth.getUser();
         if (userError) {
             console.error('[DEBUG] Failed to get user:', userError.message);
-            await captureRemote('remote_channel_get_user_error', { error: userError });
+            await this.captureSafely('remote_channel_get_user_error', { error: userError });
             throw userError;
         }
 
         if (!user) {
             const noUserError = new Error('No user returned after setSession');
             console.error('[DEBUG] No user returned:', noUserError.message);
-            await captureRemote('remote_channel_get_user_empty', {});
+            await this.captureSafely('remote_channel_get_user_empty', {});
             throw noUserError;
         }
 
@@ -110,7 +138,7 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to find device:', error.message);
-            await captureRemote('remote_channel_find_device_error', { error });
+            await this.captureSafely('remote_channel_find_device_error', { error });
             throw error;
         }
         return data;
@@ -126,7 +154,7 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to update device:', error.message);
-            await captureRemote('remote_channel_update_device_error', { error });
+            await this.captureSafely('remote_channel_update_device_error', { error });
         } else {
             console.debug('[DEBUG] Device updated successfully');
         }
@@ -143,14 +171,14 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to create device:', error.message);
-            await captureRemote('remote_channel_create_device_error', { error });
+            await this.captureSafely('remote_channel_create_device_error', { error });
             throw error;
         }
         console.debug('[DEBUG] Device created successfully');
         return { data, error };
     }
 
-    async registerDevice(capabilities: any, currentDeviceId: string | undefined, deviceName: string, onToolCall: (payload: any) => void): Promise<void> {
+    async registerDevice(capabilities: any, currentDeviceId: string | undefined, deviceName: string, onToolCall: (payload: any) => void | Promise<void>): Promise<void> {
 
         console.debug('[DEBUG] RemoteChannel.registerDevice() called, deviceId:', currentDeviceId);
 
@@ -187,7 +215,7 @@ export class RemoteChannel {
 
         } else {
             console.error(`   - ❌ Device not found: ${currentDeviceId}`);
-            await captureRemote('remote_channel_register_device_error', { error: 'Device not found', deviceId: currentDeviceId });
+            await this.captureSafely('remote_channel_register_device_error', { error: 'Device not found', deviceId: currentDeviceId });
             throw new Error(`Device not found: ${currentDeviceId}`);
         }
     }
@@ -215,9 +243,7 @@ export class RemoteChannel {
                     },
                     (payload: any) => {
                         console.debug('[DEBUG] Realtime event received, payload:', payload?.new?.id);
-                        if (this.onToolCall) {
-                            this.onToolCall(payload);
-                        }
+                        this.dispatchToolCall(payload);
                     }
                 )
                 .subscribe((status: string, err: any) => {
@@ -238,20 +264,20 @@ export class RemoteChannel {
                     } else if (status === 'CHANNEL_ERROR') {
                         // CHANNEL_ERROR is the only status carrying a real error message.
                         console.error(`❌ Channel error: ${err?.message || 'unknown'} — ${this.connState()}`);
-                        this.setOnlineStatus(this.deviceId!, 'offline');
-                        captureRemote('remote_channel_subscription_error', { error: err?.message || 'Channel error' }).catch(() => { });
+                        this.runBackground(this.setOnlineStatus(this.deviceId!, 'offline'), 'set offline status');
+                        void this.captureSafely('remote_channel_subscription_error', { error: err?.message || 'Channel error' });
                         reject(err || new Error('Failed to initialize tool call channel subscription'));
                     } else if (status === 'TIMED_OUT') {
                         console.error(`⏱️ Channel subscription timed out, Reconnecting... — ${this.connState()}`);
-                        this.setOnlineStatus(this.deviceId!, 'offline');
-                        captureRemote('remote_channel_subscription_timeout', { attempt: this.reconnectAttempt }).catch(() => { });
+                        this.runBackground(this.setOnlineStatus(this.deviceId!, 'offline'), 'set offline status');
+                        void this.captureSafely('remote_channel_subscription_timeout', { attempt: this.reconnectAttempt });
                         reject(new Error('Tool call channel subscription timed out'));
                     } else if (status === 'CLOSED') {
                         // Settle the promise so an in-flight recreateChannel() can't await
                         // forever (which would wedge the re-entrancy guard / watchdog), and
                         // mark the device offline like the other degraded states.
                         console.warn(`⚠️ Channel closed — ${this.connState()}`);
-                        this.setOnlineStatus(this.deviceId!, 'offline');
+                        this.runBackground(this.setOnlineStatus(this.deviceId!, 'offline'), 'set offline status');
                         reject(new Error('Tool call channel closed during subscribe'));
                     }
                 });
@@ -307,17 +333,17 @@ export class RemoteChannel {
             const stuckMs = now - this.joiningSince;
             if (stuckMs < JOINING_WEDGE_TIMEOUT_MS) return;
             console.debug(`[DEBUG] ⚠️ Channel stuck 'joining' ${Math.round(stuckMs / 1000)}s - forcing recreate — ${this.connState()}`);
-            captureRemote('remote_channel_joining_wedge', { stuckMs, attempt: this.reconnectAttempt });
+            void this.captureSafely('remote_channel_joining_wedge', { stuckMs, attempt: this.reconnectAttempt });
             this.joiningSince = null;
-            this.recreateChannel();
+            this.runBackground(this.recreateChannel(), 'channel recreate');
             return;
         }
 
         // Unhealthy: closed, errored, leaving — recreate
         this.joiningSince = null;
-        captureRemote('remote_channel_state_health', { state, attempt: this.reconnectAttempt });
+        void this.captureSafely('remote_channel_state_health', { state, attempt: this.reconnectAttempt });
         console.debug(`[DEBUG] ⚠️ Channel in unhealthy state '${state}' - recreating... — ${this.connState()}`);
-        this.recreateChannel();
+        this.runBackground(this.recreateChannel(), 'channel recreate');
     }
 
     /**
@@ -384,7 +410,7 @@ export class RemoteChannel {
                 await this.createChannel();
             }, RECREATE_TIMEOUT_MS, 'recreateChannel');
         } catch (err: any) {
-            captureRemote('remote_channel_recreate_error', { errMsg: err?.message, attempt: this.reconnectAttempt });
+            void this.captureSafely('remote_channel_recreate_error', { errMsg: err?.message, attempt: this.reconnectAttempt });
             console.debug(`[DEBUG] Channel recreation failed: ${err?.message} — ${this.connState()}`);
         } finally {
             this.isRecreatingChannel = false;
@@ -400,7 +426,7 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to mark call executing:', error.message);
-            await captureRemote('remote_channel_mark_call_executing_error', { error });
+            await this.captureSafely('remote_channel_mark_call_executing_error', { error });
         } else {
             console.debug('[DEBUG] Call marked executing:', callId);
         }
@@ -424,7 +450,7 @@ export class RemoteChannel {
 
         if (error) {
             console.error('[DEBUG] Failed to update call result:', error.message);
-            await captureRemote('remote_channel_update_call_result_error', { error });
+            await this.captureSafely('remote_channel_update_call_result_error', { error });
         } else {
             console.debug('[DEBUG] Call result updated successfully:', data);
         }
@@ -440,25 +466,30 @@ export class RemoteChannel {
 
             if (error) {
                 console.error('[DEBUG] Heartbeat update failed:', error.message);
-                await captureRemote('remote_channel_heartbeat_error', { error });
+                await this.captureSafely('remote_channel_heartbeat_error', { error });
             }
             // console.log(`🔌 Heartbeat sent for device: ${deviceId}`);
         } catch (error: any) {
             console.error('Heartbeat failed:', error.message);
-            await captureRemote('remote_channel_heartbeat_error', { error });
+            await this.captureSafely('remote_channel_heartbeat_error', { error });
         }
     }
 
     startHeartbeat(deviceId: string) {
         console.debug('[DEBUG] Starting heartbeat for device:', deviceId);
         this.connectionCheckInterval = setInterval(() => {
-            this.checkConnectionHealth();
+            try {
+                this.checkConnectionHealth();
+            } catch (error: any) {
+                console.warn('[remote-channel] connection health check failed:', error?.message || error);
+            }
         }, 10000);
 
-        // Update last_seen every 15 seconds
-        this.heartbeatInterval = setInterval(async () => {
-            await this.updateHeartbeat(deviceId);
+        // Never leave a timer callback with an unobserved rejected Promise.
+        this.heartbeatInterval = setInterval(() => {
+            this.runBackground(this.updateHeartbeat(deviceId), 'heartbeat update');
         }, HEARTBEAT_INTERVAL);
+        this.runBackground(this.updateHeartbeat(deviceId), 'initial heartbeat update');
         console.debug('[DEBUG] Heartbeat intervals set - connectionCheck: 10s, heartbeat: 15s');
     }
 
@@ -492,7 +523,7 @@ export class RemoteChannel {
             if (status == "online") {
                 console.error('Failed to update device status:', error.message);
             }
-            await captureRemote('remote_channel_status_update_error', { error, status });
+            await this.captureSafely('remote_channel_status_update_error', { error, status });
             return;
         } else {
             console.debug(`[DEBUG] Device status set to ${status}`);
@@ -582,7 +613,7 @@ export class RemoteChannel {
         } catch (error: any) {
             console.error('❌ Error in blocking offline update:', error.message);
             console.debug('[DEBUG] setOffline() error stack:', error.stack);
-            await captureRemote('remote_channel_offline_update_error', { error });
+            await this.captureSafely('remote_channel_offline_update_error', { error });
         }
     }
 
