@@ -34,3 +34,15 @@ npm test
 npm run test:three-modes
 npm audit --omit=dev
 ```
+
+## Windows x64 verification
+
+Focused reliability tests and the enforced three-mode benchmark also passed on Windows x64 with Node v24.18.0.
+
+| Mode | Shell median | Streaming median | Duplicate search sessions | Search elapsed |
+|---|---:|---:|---:|---:|
+| No plugin (direct) | 30.56 ms | 0.11 ms | — | — |
+| Legacy plugin | 133.16 ms | 62.45 ms | 2 | 199.01 ms |
+| Optimized 0.2.48 plugin | 48.40 ms | 12.71 ms | 1 | 34.58 ms |
+
+On Windows, the optimized plugin was 63.7% faster than the legacy plugin for shell startup, 79.6% faster for streaming, and 82.6% faster for duplicate search. The optimized profile used `cmd.exe`; the legacy profile used `powershell.exe`.

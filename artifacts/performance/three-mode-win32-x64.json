@@ -1,0 +1,32 @@
+{
+  "version": "0.2.48",
+  "generatedAt": "2026-07-31T05:06:19.257Z",
+  "platform": "win32",
+  "arch": "x64",
+  "node": "v24.18.0",
+  "repetitions": 7,
+  "modes": {
+    "direct": {
+      "description": "No plugin; direct child_process execution",
+      "shellMedianMs": 30.56,
+      "streamingMedianMs": 0.11
+    },
+    "legacyPlugin": {
+      "description": "Plugin behavior compatible with 0.2.46",
+      "shell": "powershell.exe",
+      "shellMedianMs": 133.16,
+      "streamingMedianMs": 62.45,
+      "duplicateSearchSessions": 2,
+      "duplicateSearchElapsedMs": 199.01
+    },
+    "optimizedPlugin": {
+      "description": "0.2.48 optimized plugin profile",
+      "shell": "cmd.exe",
+      "shellMedianMs": 48.4,
+      "streamingMedianMs": 12.71,
+      "duplicateSearchSessions": 1,
+      "duplicateSearchElapsedMs": 34.58,
+      "searchReused": true
+    }
+  }
+}
