@@ -1,0 +1,32 @@
+{
+  "version": "0.2.47",
+  "generatedAt": "2026-07-31T03:56:33.770Z",
+  "platform": "darwin",
+  "arch": "x64",
+  "node": "v22.23.0",
+  "repetitions": 7,
+  "modes": {
+    "direct": {
+      "description": "No plugin; direct child_process execution",
+      "shellMedianMs": 116.82,
+      "streamingMedianMs": 0.24
+    },
+    "legacyPlugin": {
+      "description": "Plugin behavior compatible with 0.2.46",
+      "shell": "/bin/zsh",
+      "shellMedianMs": 124.21,
+      "streamingMedianMs": 51.71,
+      "duplicateSearchSessions": 2,
+      "duplicateSearchElapsedMs": 129.32
+    },
+    "optimizedPlugin": {
+      "description": "0.2.47 optimized plugin profile",
+      "shell": "/bin/sh",
+      "shellMedianMs": 148.32,
+      "streamingMedianMs": 35.33,
+      "duplicateSearchSessions": 1,
+      "duplicateSearchElapsedMs": 104.29,
+      "searchReused": true
+    }
+  }
+}

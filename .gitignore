@@ -58,3 +58,6 @@ test_files/
 test_fix.js
 test_search.js
 .ripgrep-downloads/
+
+# Local verbose test execution logs; commit summarized evidence instead
+artifacts/test-results/

@@ -73,6 +73,8 @@ export class MCPDevice {
     private persistSession: boolean;
     private desktop: DesktopCommanderIntegration;
     private callDeduplicator = new RemoteCallDeduplicator();
+    private sessionSaveQueue: Promise<void> = Promise.resolve();
+    private authSubscription?: { unsubscribe: () => void };
 
     constructor(options: MCPDeviceOptions = {}) {
         this.baseServerUrl = process.env.MCP_SERVER_URL || 'https://mcp.desktopcommander.app';
@@ -201,8 +203,13 @@ export class MCPDevice {
             }
 
 
+            this.authSubscription = this.remoteChannel.onAuthStateChange((event, refreshedSession) => {
+                if (event !== 'TOKEN_REFRESHED' || !refreshedSession || !this.persistSession) return;
+                this.queuePersistedConfigSave('token-refreshed');
+            }).data.subscription;
+
             // Force save the current session immediately to ensure it's persisted
-            await this.savePersistedConfig();
+            await this.savePersistedConfig('startup');
 
             const deviceName = os.hostname();
 
@@ -269,25 +276,34 @@ export class MCPDevice {
         }
     }
 
-    async savePersistedConfig() {
+    private queuePersistedConfigSave(reason: string): void {
+        this.sessionSaveQueue = this.sessionSaveQueue
+            .then(() => this.savePersistedConfig(reason))
+            .catch((error: any) => {
+                console.error(' - ❌ Failed queued session save:', error?.message || error);
+            });
+    }
+
+    async savePersistedConfig(reason = 'manual') {
         try {
-            console.debug('[DEBUG] Saving persisted config, persistSession:', this.persistSession);
+            console.debug('[DEBUG] Saving persisted config, persistSession:', this.persistSession, 'reason:', reason);
             const currentSessionStore = await this.remoteChannel.getSession();
             const session = currentSessionStore.data.session;
 
             const config = {
                 deviceId: this.deviceId,
-                // Only save session if --persist-session flag is set
                 session: (session && this.persistSession) ? {
                     access_token: session.access_token,
                     refresh_token: session.refresh_token
                 } : null
             };
-            // Ensure the config directory exists
-            console.debug('[DEBUG] Creating config directory:', path.dirname(this.configPath));
-            await fs.mkdir(path.dirname(this.configPath), { recursive: true });
-            await fs.writeFile(this.configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
-            console.debug('[DEBUG] Config saved to:', this.configPath);
+            const directory = path.dirname(this.configPath);
+            const temporaryPath = `${this.configPath}.${process.pid}.${Date.now()}.tmp`;
+            await fs.mkdir(directory, { recursive: true });
+            await fs.writeFile(temporaryPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+            await fs.rename(temporaryPath, this.configPath);
+            await fs.chmod(this.configPath, 0o600);
+            console.debug('[DEBUG] Config atomically saved to:', this.configPath);
         } catch (error: any) {
             console.error(' - ❌ Failed to save config:', error.message);
             console.debug('[DEBUG] Config save error details:', error);
@@ -406,6 +422,9 @@ export class MCPDevice {
         console.debug('[DEBUG] Shutdown initiated for device:', this.deviceId);
 
         try {
+            this.authSubscription?.unsubscribe();
+            await this.sessionSaveQueue;
+
             // Stop heartbeat first to prevent new operations
             console.log('  → Stopping heartbeat...');
             console.debug('[DEBUG] Calling stopHeartbeat()');

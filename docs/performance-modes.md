@@ -1,6 +1,6 @@
-# Remote Desktop Commander performance modes (v0.2.47)
+# Remote Desktop Commander performance modes (v0.2.48)
 
-Version 0.2.47 adds a reproducible three-mode test matrix and an optimized production profile.
+Version 0.2.48 adds a reproducible three-mode test matrix and an optimized production profile.
 
 ## Modes
 
@@ -8,7 +8,7 @@ Version 0.2.47 adds a reproducible three-mode test matrix and an optimized produ
 |---|---|---|
 | `direct` | Baseline without the plugin | Native `child_process` and direct process streams |
 | `legacy-plugin` | Compatibility comparison with 0.2.46 behavior | Default configured shell, 50 ms polling, separate identical searches |
-| `optimized-plugin` | New default in 0.2.47 | Safe fast-shell routing, adaptive polling, search coalescing, corrected line buffering |
+| `optimized-plugin` | New default in 0.2.48 | Safe fast-shell routing, adaptive polling, search coalescing, corrected line buffering |
 
 The production default is `optimized-plugin`. To temporarily use the old execution behavior:
 
@@ -35,8 +35,8 @@ The three-mode runner writes a JSON report to `artifacts/performance/three-mode-
 - Polling uses 10 ms intervals for the first 250 ms, then backs off to 50 ms.
 - Python and other prompts emitted through `stderr` are recognized immediately.
 - Streaming line buffers no longer mutate completed lines behind the read cursor.
-- Remote launcher examples use direct stream redirection instead of per-line PowerShell `Add-Content`.
+- Remote launchers delegate to a locked cross-platform supervisor with live log rotation and bounded restart backoff.
 
 ## Rollback
 
-Runtime rollback does not require reinstalling: set `DC_PLUGIN_MODE=legacy-plugin`. Source rollback is the Git tag preceding `v0.2.47`.
+Runtime rollback does not require reinstalling: set `DC_PLUGIN_MODE=legacy-plugin`. Source rollback is the Git tag preceding `v0.2.48`.

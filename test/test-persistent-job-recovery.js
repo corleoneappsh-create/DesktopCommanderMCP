@@ -1,0 +1,26 @@
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-job-recovery-'));
+process.env.DC_JOB_REGISTRY_DIR = temp;
+const { PersistentJobRegistry } = await import('../dist/persistent-job-registry.js');
+const { TerminalManager } = await import('../dist/terminal-manager.js');
+const manager1 = new TerminalManager(new PersistentJobRegistry(temp));
+const command = `${JSON.stringify(process.execPath)} -e "console.log('RECOVERY_START');setTimeout(()=>console.log('RECOVERY_END'),350)"`;
+const started = await manager1.executeCommand(command, 50, true);
+assert.ok(started.pid > 0);
+await new Promise((resolve) => setTimeout(resolve, 100));
+const manager2 = new TerminalManager(new PersistentJobRegistry(temp));
+assert.ok(manager2.listActiveSessions().some((entry) => entry.pid === started.pid));
+const mid = manager2.readOutputPaginated(started.pid, 0, 100);
+assert.ok(mid?.lines.join('\n').includes('RECOVERY_START'));
+await new Promise((resolve) => setTimeout(resolve, 500));
+const manager3 = new TerminalManager(new PersistentJobRegistry(temp));
+const final = manager3.readOutputPaginated(started.pid, 0, 100);
+assert.equal(final?.isComplete, true);
+assert.ok(final?.lines.join('\n').includes('RECOVERY_END'));
+assert.equal(fs.readdirSync(temp).filter((name) => name.endsWith('.tmp')).length, 0);
+fs.rmSync(temp, { recursive: true, force: true });
+console.log('PASS long-running process remains observable after manager restart');

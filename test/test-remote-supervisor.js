@@ -1,0 +1,23 @@
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { acquireLock, rotateLogIfNeeded, runSupervisor } from '../scripts/remote-launcher/supervisor.mjs';
+
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-supervisor-'));
+const lock = path.join(temp, 'remote.lock');
+assert.equal(acquireLock(lock), true);
+assert.equal(acquireLock(lock), false);
+const duplicateCode = await runSupervisor({ entry: process.argv[1], logPath: path.join(temp, 'remote.log'), lockPath: lock });
+assert.equal(duplicateCode, 75);
+fs.rmSync(lock, { force: true });
+fs.writeFileSync(lock, '99999999\n');
+assert.equal(acquireLock(lock), true);
+fs.rmSync(lock, { force: true });
+const log = path.join(temp, 'rotation.log');
+fs.writeFileSync(log, '0123456789abcdef');
+const rotated = rotateLogIfNeeded(log, 8);
+assert.ok(rotated && fs.existsSync(rotated));
+assert.equal(fs.existsSync(log), false);
+fs.rmSync(temp, { recursive: true, force: true });
+console.log('PASS supervisor lock rejects duplicates and rotates oversized logs');

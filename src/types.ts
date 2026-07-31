@@ -25,6 +25,10 @@ export interface TerminalSession {
   bufferedChars: number;      // Joined length of outputLines (content + separators)
   evictedLines: number;       // Lines dropped from the front to enforce the buffer cap
   evictedChars: number;       // Joined length of evicted lines (keeps snapshot offsets absolute)
+  jobLogPath?: string;
+  jobLogStream?: NodeJS.WritableStream;
+  jobLogBytes?: number;
+  jobLogTruncated?: boolean;
 }
 
 export interface CommandExecutionResult {

@@ -127,6 +127,11 @@ export class RemoteChannel {
         return await this.client.auth.getSession();
     }
 
+    onAuthStateChange(callback: (event: string, session: Session | null) => void) {
+        if (!this.client) throw new Error('Client not initialized');
+        return this.client.auth.onAuthStateChange(callback);
+    }
+
     async findDevice(deviceId: string) {
         if (!this.client) throw new Error('Client not initialized');
         const { data, error } = await this.client

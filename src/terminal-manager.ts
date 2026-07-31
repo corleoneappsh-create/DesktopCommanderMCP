@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
 import { DEFAULT_COMMAND_TIMEOUT } from './config.js';
@@ -6,6 +7,7 @@ import { configManager } from './config-manager.js';
 import {capture} from "./utils/capture.js";
 import { analyzeProcessState } from './utils/process-detection.js';
 import { isOptimizedPluginMode } from './performance-mode.js';
+import { PersistentJobRegistry } from './persistent-job-registry.js';
 
 /**
  * Standard Windows PATHEXT value, used to repair a corrupted PATHEXT before
@@ -57,6 +59,7 @@ interface CompletedSession {
 export const MAX_BUFFERED_OUTPUT_CHARS = 50 * 1024 * 1024;  // per session; oldest lines evicted first
 const MAX_LINE_CHARS = 1024 * 1024;                  // force-split longer lines so eviction can work
 const MAX_WAIT_OUTPUT_CHARS = 2 * 1024 * 1024;       // start_process wait buffer (prompt/state detection)
+const MAX_PERSISTED_JOB_LOG_BYTES = 100 * 1024 * 1024;
 
 // Result type for paginated output reading
 export interface PaginatedOutputResult {
@@ -148,6 +151,15 @@ function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig
 export class TerminalManager {
   private sessions: Map<number, TerminalSession> = new Map();
   private completedSessions: Map<number, CompletedSession> = new Map();
+  private jobRegistry: PersistentJobRegistry;
+  private recoveredReadIndex = new Map<number, number>();
+
+  constructor(jobRegistry = new PersistentJobRegistry()) {
+    this.jobRegistry = jobRegistry;
+    for (const record of this.jobRegistry.list()) {
+      this.recoveredReadIndex.set(record.pid, 0);
+    }
+  }
   
   /**
    * Send input to a running process
@@ -280,6 +292,11 @@ export class TerminalManager {
       evictedChars: 0
     };
 
+    const persistentJob = this.jobRegistry.register(childProcess.pid, session.startTime);
+    session.jobLogPath = persistentJob.logPath;
+    session.jobLogStream = fs.createWriteStream(persistentJob.logPath, { flags: 'a', mode: 0o600 });
+    session.jobLogBytes = 0;
+    session.jobLogTruncated = false;
     this.sessions.set(childProcess.pid, session);
 
     // Timing telemetry
@@ -334,8 +351,9 @@ export class TerminalManager {
             output = output.slice(-Math.floor(MAX_WAIT_OUTPUT_CHARS / 2));
           }
         }
-        // Append to line-based buffer
+        // Append to line-based buffer and persistent job log
         this.appendToLineBuffer(session, text);
+        this.appendToJobLog(session, text);
 
         // Record output event if collecting timing
         if (collectTiming) {
@@ -378,8 +396,9 @@ export class TerminalManager {
             output = output.slice(-Math.floor(MAX_WAIT_OUTPUT_CHARS / 2));
           }
         }
-        // Append to line-based buffer
+        // Append to line-based buffer and persistent job log
         this.appendToLineBuffer(session, text);
+        this.appendToJobLog(session, text);
 
         // Record output event if collecting timing
         if (collectTiming) {
@@ -449,6 +468,8 @@ export class TerminalManager {
             this.completedSessions.delete(oldestKey);
           }
 
+          session.jobLogStream?.end();
+          this.jobRegistry.complete(childProcess.pid, code);
           this.sessions.delete(childProcess.pid);
         }
         exitReason = 'process_exit';
@@ -459,6 +480,48 @@ export class TerminalManager {
         });
       });
     });
+  }
+
+
+  private appendToJobLog(session: TerminalSession, text: string): void {
+    if (!session.jobLogStream || session.jobLogTruncated || !text) return;
+    const buffer = Buffer.from(text, 'utf8');
+    const written = session.jobLogBytes || 0;
+    const remaining = MAX_PERSISTED_JOB_LOG_BYTES - written;
+    if (remaining <= 0) {
+      session.jobLogStream.write('\n[desktop-commander persistent log truncated at 100 MB]\n');
+      session.jobLogTruncated = true;
+      return;
+    }
+    const chunk = buffer.length <= remaining ? buffer : buffer.subarray(0, remaining);
+    session.jobLogStream.write(chunk);
+    session.jobLogBytes = written + chunk.length;
+    if (chunk.length < buffer.length) {
+      session.jobLogStream.write('\n[desktop-commander persistent log truncated at 100 MB]\n');
+      session.jobLogTruncated = true;
+    }
+  }
+
+  private readRecoveredJob(pid: number, offset: number, length: number): PaginatedOutputResult | null {
+    const record = this.jobRegistry.get(pid);
+    if (!record || !fs.existsSync(record.logPath)) return null;
+    const text = fs.readFileSync(record.logPath, 'utf8');
+    const lines = text.length ? text.split('\n') : [];
+    const alive = record.status === 'running' && this.jobRegistry.isProcessAlive(pid);
+    if (record.status === 'running' && !alive) this.jobRegistry.reconcile();
+    const lastReadIndex = this.recoveredReadIndex.get(pid) || 0;
+    const startedAt = Date.parse(record.startedAt);
+    const endedAt = record.endedAt ? Date.parse(record.endedAt) : Date.now();
+    return this.readFromLineBuffer(
+      lines,
+      offset,
+      length,
+      lastReadIndex,
+      (newIndex) => { this.recoveredReadIndex.set(pid, newIndex); },
+      !alive,
+      record.exitCode ?? null,
+      Math.max(0, endedAt - startedAt),
+    );
   }
 
   /**
@@ -560,7 +623,7 @@ export class TerminalManager {
       return result;
     }
 
-    return null;
+    return this.readRecoveredJob(pid, offset, length);
   }
 
   /**
@@ -630,7 +693,8 @@ export class TerminalManager {
       return completedSession.outputLines.length;
     }
 
-    return null;
+    const recovered = this.readRecoveredJob(pid, 1, Number.MAX_SAFE_INTEGER);
+    return recovered?.totalLines ?? null;
   }
 
   /**
@@ -731,7 +795,17 @@ export class TerminalManager {
   forceTerminate(pid: number): boolean {
     const session = this.sessions.get(pid);
     if (!session) {
-      return false;
+      const recovered = this.jobRegistry.get(pid);
+      if (!recovered || !this.jobRegistry.isProcessAlive(pid)) return false;
+      try {
+        process.kill(pid, 'SIGINT');
+        setTimeout(() => {
+          if (this.jobRegistry.isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+        }, 1000);
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     try {
@@ -752,11 +826,18 @@ export class TerminalManager {
 
   listActiveSessions(): ActiveSession[] {
     const now = new Date();
-    return Array.from(this.sessions.values()).map(session => ({
+    const active = Array.from(this.sessions.values()).map(session => ({
       pid: session.pid,
       isBlocked: session.isBlocked,
       runtime: now.getTime() - session.startTime.getTime()
     }));
+    const known = new Set(active.map((session) => session.pid));
+    for (const record of this.jobRegistry.list()) {
+      if (!known.has(record.pid) && record.status === 'running' && this.jobRegistry.isProcessAlive(record.pid)) {
+        active.push({ pid: record.pid, isBlocked: true, runtime: now.getTime() - Date.parse(record.startedAt) });
+      }
+    }
+    return active;
   }
 
   listCompletedSessions(): CompletedSession[] {

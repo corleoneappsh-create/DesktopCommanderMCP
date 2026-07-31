@@ -122,7 +122,7 @@ async function pluginDedup(mode, corpusDir) {
   const manager = new SearchManager();
   const options = {
     rootPath: corpusDir,
-    pattern: 'RDC_BENCHMARK_NO_MATCH_0247',
+    pattern: 'RDC_BENCHMARK_NO_MATCH_0248',
     searchType: 'content',
     timeout: 5000,
     maxResults: 10
@@ -169,8 +169,9 @@ export async function runThreeModeBenchmark({ enforce = false, repetitions = 7 }
     const optimizedStreaming = await pluginStream('optimized-plugin', worker, repetitions);
     const optimizedSearch = await pluginDedup('optimized-plugin', corpusDir);
 
+    const packageJson = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'));
     const report = {
-      version: '0.2.47',
+      version: packageJson.version,
       generatedAt: new Date().toISOString(),
       platform: process.platform,
       arch: process.arch,
@@ -191,7 +192,7 @@ export async function runThreeModeBenchmark({ enforce = false, repetitions = 7 }
           duplicateSearchElapsedMs: round(legacySearch.ms)
         },
         optimizedPlugin: {
-          description: '0.2.47 optimized plugin profile',
+          description: '0.2.48 optimized plugin profile',
           shell: optimizedShellName,
           shellMedianMs: round(median(optimizedShell)),
           streamingMedianMs: round(median(optimizedStreaming)),
