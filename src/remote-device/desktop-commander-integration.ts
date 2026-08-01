@@ -20,6 +20,7 @@ export class DesktopCommanderIntegration {
     private mcpClient: Client | null = null;
     private mcpTransport: StdioClientTransport | null = null;
     private isReady: boolean = false;
+    private isShuttingDown: boolean = false;
 
     async initialize() {
         console.debug('[DEBUG] DesktopCommanderIntegration.initialize() called');
@@ -59,6 +60,22 @@ export class DesktopCommanderIntegration {
             console.debug('[DEBUG] Connecting MCP client to transport');
             await this.mcpClient.connect(this.mcpTransport);
             this.isReady = true;
+
+            // If the local stdio MCP child dies, the cloud-facing remote agent
+            // must not keep advertising a zombie device. Exit the outer agent;
+            // the production supervisor restarts the full pair cleanly.
+            this.mcpTransport.onclose = () => {
+                this.isReady = false;
+                if (!this.isShuttingDown) {
+                    console.error(' - Local Desktop Commander MCP connection closed; recycling remote agent');
+                    setTimeout(() => process.exit(42), 25);
+                }
+            };
+            this.mcpTransport.onerror = (error: Error) => {
+                if (!this.isShuttingDown) {
+                    console.error(' - Local Desktop Commander MCP transport error:', error);
+                }
+            };
 
             console.log(' - 🔌 Connected to Desktop Commander MCP');
             console.debug('[DEBUG] Desktop Commander MCP connection successful');
@@ -133,16 +150,29 @@ export class DesktopCommanderIntegration {
         // Proxy other tools to MCP server
         try {
             console.debug('[DEBUG] Calling MCP tool:', toolName, 'args:', JSON.stringify(args).substring(0, 100));
+            const requestedTimeout = Number(args?.timeout_ms);
+            const requestTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+                ? Math.min(1_800_000, Math.max(60_000, requestedTimeout + 15_000))
+                : 60_000;
             const result = await this.mcpClient.callTool({
                 name: toolName,
                 arguments: args,
                 _meta: { remote: true, ...metadata || {} }
-            } as any);
+            } as any, undefined, {
+                timeout: requestTimeout,
+                maxTotalTimeout: requestTimeout
+            });
             console.debug('[DEBUG] Tool call successful:', toolName);
             return result;
         } catch (error) {
             console.error(`Error executing tool ${toolName}:`, error);
             console.debug('[DEBUG] Tool call error details:', error);
+            const message = error instanceof Error ? error.message : String(error);
+            if (!this.isShuttingDown && /Not connected|Connection closed/i.test(message)) {
+                this.isReady = false;
+                console.error(' - Local Desktop Commander MCP is unavailable; recycling remote agent');
+                setTimeout(() => process.exit(42), 25);
+            }
             await captureRemote('desktop_integration_tool_call_failed', { error, toolName });
             throw error;
         }
@@ -170,6 +200,7 @@ export class DesktopCommanderIntegration {
     }
 
     async shutdown() {
+        this.isShuttingDown = true;
         console.debug('[DEBUG] DesktopCommanderIntegration.shutdown() called');
         const closeWithTimeout = async (operation: () => Promise<void>, name: string, timeoutMs: number = 3000) => {
             return Promise.race([
