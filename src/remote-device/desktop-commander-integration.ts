@@ -151,12 +151,17 @@ export class DesktopCommanderIntegration {
         try {
             console.debug('[DEBUG] Calling MCP tool:', toolName, 'args:', JSON.stringify(args).substring(0, 100));
             const requestedTimeout = Number(args?.timeout_ms);
-            const requestTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-                ? Math.min(1_800_000, Math.max(60_000, requestedTimeout + 15_000))
+            const remoteWaitTools = new Set(['start_process', 'read_process_output', 'interact_with_process']);
+            const forwardedArgs = remoteWaitTools.has(toolName) && Number.isFinite(requestedTimeout) && requestedTimeout > 20_000
+                ? { ...args, timeout_ms: 20_000 }
+                : args;
+            const forwardedTimeout = Number(forwardedArgs?.timeout_ms);
+            const requestTimeout = Number.isFinite(forwardedTimeout) && forwardedTimeout > 0
+                ? Math.min(60_000, Math.max(30_000, forwardedTimeout + 10_000))
                 : 60_000;
             const result = await this.mcpClient.callTool({
                 name: toolName,
-                arguments: args,
+                arguments: forwardedArgs,
                 _meta: { remote: true, ...metadata || {} }
             } as any, undefined, {
                 timeout: requestTimeout,
