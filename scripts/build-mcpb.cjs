@@ -117,7 +117,8 @@ const bundlePackageJson = {
     author: manifest.author,
     license: manifest.license,
     repository: manifest.repository,
-    dependencies: packageJson.dependencies // Use dependencies directly from package.json
+    dependencies: packageJson.dependencies, // Use dependencies directly from package.json
+    overrides: packageJson.overrides || {}
 };
 
 fs.writeFileSync(
@@ -128,7 +129,7 @@ fs.writeFileSync(
 // Step 6b: Install dependencies in bundle directory
 console.log('📦 Installing production dependencies in bundle...');
 try {
-    execSync('npm install --omit=dev --production', { cwd: BUNDLE_DIR, stdio: 'inherit' });
+    execSync('npm install --omit=dev --ignore-scripts', { cwd: BUNDLE_DIR, stdio: 'inherit' });
     console.log('✅ Dependencies installed');
 } catch (error) {
     console.error('❌ Failed to install dependencies:', error.message);

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INDEX = path.join(__dirname, '..', 'dist', 'index.js');
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 30_000;
 
 class ExistingConfigClaudeCodeMigrationTest {
   constructor() {
@@ -35,6 +35,21 @@ class ExistingConfigClaudeCodeMigrationTest {
     }
   }
 
+  async waitForPersistedConfig(timeoutMs = 2_000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastError;
+    while (Date.now() < deadline) {
+      try {
+        const config = JSON.parse(readFileSync(this.configPath, 'utf8'));
+        if (config.pendingWelcomeOnboarding === false) return config;
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`Timed out waiting for persisted config: ${lastError?.message || 'pending flag unchanged'}`);
+  }
+
   async initializeAsClaudeCode() {
     await new Promise((resolve, reject) => {
       const child = spawn('node', [DIST_INDEX], {
@@ -47,11 +62,28 @@ class ExistingConfigClaudeCodeMigrationTest {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
-      const timeout = setTimeout(() => finish(new Error('Timed out waiting for initialize response')), TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        void finish(new Error('Timed out waiting for initialize response'));
+      }, TIMEOUT_MS);
 
-      const finish = (error) => {
+      const stopChild = async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        await new Promise((stopped) => {
+          const forceKill = setTimeout(() => child.kill('SIGKILL'), 1_000);
+          child.once('exit', () => {
+            clearTimeout(forceKill);
+            stopped();
+          });
+          child.kill('SIGTERM');
+        });
+      };
+
+      let settled = false;
+      const finish = async (error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
-        child.kill('SIGTERM');
+        await stopChild();
         error ? reject(error) : resolve();
       };
 
@@ -63,13 +95,15 @@ class ExistingConfigClaudeCodeMigrationTest {
           stdout = stdout.slice(newline + 1);
           try {
             const message = JSON.parse(line);
-            if (message.id === 1) finish();
+            if (message.id === 1) {
+              void this.waitForPersistedConfig().then(() => finish()).catch(finish);
+            }
           } catch {
             // Ignore non-protocol output.
           }
         }
       });
-      child.on('error', finish);
+      child.on('error', (error) => { void finish(error); });
       child.stdin.write(`${JSON.stringify({
         jsonrpc: '2.0',
         id: 1,

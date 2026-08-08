@@ -12,6 +12,7 @@ assert.equal(getPluginPerformanceMode('old'), 'legacy-plugin');
 assert.equal(getPluginPerformanceMode('0.2.46'), 'legacy-plugin');
 assert.equal(getPluginPerformanceMode('new'), 'optimized-plugin');
 assert.equal(getPluginPerformanceMode('0.2.47'), 'optimized-plugin');
+assert.equal(getPluginPerformanceMode('0.2.48'), 'optimized-plugin');
 assert.equal(getPluginPerformanceMode('unknown'), 'optimized-plugin');
 assert.equal(isOptimizedPluginMode('optimized'), true);
 assert.equal(isOptimizedPluginMode('legacy'), false);

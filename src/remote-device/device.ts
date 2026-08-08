@@ -13,6 +13,57 @@ export interface MCPDeviceOptions {
     persistSession?: boolean;
 }
 
+const DEFAULT_MAX_LOG_CHARS = 2048;
+const DEFAULT_CALL_TTL_MS = 5 * 60_000;
+const DEFAULT_MAX_RECENT_CALLS = 1024;
+
+export function compactForLog(value: unknown, maxChars = DEFAULT_MAX_LOG_CHARS): string {
+    let rendered: string;
+    try {
+        const serialized = JSON.stringify(value);
+        rendered = serialized === undefined ? String(value) : serialized;
+    } catch (error: any) {
+        return `[unserializable: ${error?.message || String(error)}]`;
+    }
+    if (rendered.length <= maxChars) return rendered;
+    return `${rendered.slice(0, maxChars)}…[truncated ${rendered.length - maxChars} chars]`;
+}
+
+export class RemoteCallDeduplicator {
+    private active = new Set<string>();
+    private completed = new Map<string, number>();
+
+    constructor(
+        private ttlMs = DEFAULT_CALL_TTL_MS,
+        private maxRecent = DEFAULT_MAX_RECENT_CALLS,
+    ) {}
+
+    begin(callId: string, now = Date.now()): boolean {
+        this.cleanup(now);
+        if (this.active.has(callId) || this.completed.has(callId)) return false;
+        this.active.add(callId);
+        return true;
+    }
+
+    finish(callId: string, now = Date.now()): void {
+        this.active.delete(callId);
+        this.completed.delete(callId);
+        this.completed.set(callId, now);
+        this.cleanup(now);
+    }
+
+    private cleanup(now: number): void {
+        for (const [callId, completedAt] of this.completed) {
+            if (now - completedAt >= this.ttlMs) this.completed.delete(callId);
+        }
+        while (this.completed.size > this.maxRecent) {
+            const oldest = this.completed.keys().next().value as string | undefined;
+            if (!oldest) break;
+            this.completed.delete(oldest);
+        }
+    }
+}
+
 export class MCPDevice {
     private baseServerUrl: string;
     private remoteChannel: RemoteChannel;
@@ -21,6 +72,9 @@ export class MCPDevice {
     private configPath: string;
     private persistSession: boolean;
     private desktop: DesktopCommanderIntegration;
+    private callDeduplicator = new RemoteCallDeduplicator();
+    private sessionSaveQueue: Promise<void> = Promise.resolve();
+    private authSubscription?: { unsubscribe: () => void };
 
     constructor(options: MCPDeviceOptions = {}) {
         this.baseServerUrl = process.env.MCP_SERVER_URL || 'https://mcp.desktopcommander.app';
@@ -149,8 +203,13 @@ export class MCPDevice {
             }
 
 
+            this.authSubscription = this.remoteChannel.onAuthStateChange((event, refreshedSession) => {
+                if (event !== 'TOKEN_REFRESHED' || !refreshedSession || !this.persistSession) return;
+                this.queuePersistedConfigSave('token-refreshed');
+            }).data.subscription;
+
             // Force save the current session immediately to ensure it's persisted
-            await this.savePersistedConfig();
+            await this.savePersistedConfig('startup');
 
             const deviceName = os.hostname();
 
@@ -159,7 +218,11 @@ export class MCPDevice {
                 await this.desktop.listClientTools(),
                 this.deviceId,
                 deviceName,
-                (payload: any) => this.handleNewToolCall(payload)
+                (payload: any) => {
+                    void this.handleNewToolCall(payload).catch((error: any) => {
+                        console.error('Unhandled remote tool callback error:', error?.message || error);
+                    });
+                }
             );
 
             console.log('✅ Device ready:');
@@ -213,25 +276,34 @@ export class MCPDevice {
         }
     }
 
-    async savePersistedConfig() {
+    private queuePersistedConfigSave(reason: string): void {
+        this.sessionSaveQueue = this.sessionSaveQueue
+            .then(() => this.savePersistedConfig(reason))
+            .catch((error: any) => {
+                console.error(' - ❌ Failed queued session save:', error?.message || error);
+            });
+    }
+
+    async savePersistedConfig(reason = 'manual') {
         try {
-            console.debug('[DEBUG] Saving persisted config, persistSession:', this.persistSession);
+            console.debug('[DEBUG] Saving persisted config, persistSession:', this.persistSession, 'reason:', reason);
             const currentSessionStore = await this.remoteChannel.getSession();
             const session = currentSessionStore.data.session;
 
             const config = {
                 deviceId: this.deviceId,
-                // Only save session if --persist-session flag is set
                 session: (session && this.persistSession) ? {
                     access_token: session.access_token,
                     refresh_token: session.refresh_token
                 } : null
             };
-            // Ensure the config directory exists
-            console.debug('[DEBUG] Creating config directory:', path.dirname(this.configPath));
-            await fs.mkdir(path.dirname(this.configPath), { recursive: true });
-            await fs.writeFile(this.configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
-            console.debug('[DEBUG] Config saved to:', this.configPath);
+            const directory = path.dirname(this.configPath);
+            const temporaryPath = `${this.configPath}.${process.pid}.${Date.now()}.tmp`;
+            await fs.mkdir(directory, { recursive: true });
+            await fs.writeFile(temporaryPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+            await fs.rename(temporaryPath, this.configPath);
+            await fs.chmod(this.configPath, 0o600);
+            console.debug('[DEBUG] Config atomically saved to:', this.configPath);
         } catch (error: any) {
             console.error(' - ❌ Failed to save config:', error.message);
             console.debug('[DEBUG] Config save error details:', error);
@@ -260,62 +332,82 @@ export class MCPDevice {
     // Methods moved to RemoteChannel
 
     async handleNewToolCall(payload: any) {
-        const toolCall = payload.new;
-        // Expect toolCall to include a device_id field used to route calls to this device instance.
-        const { id: call_id, tool_name, tool_args, device_id, metadata = {} } = toolCall;
+        const toolCall = payload?.new;
+        if (!toolCall || typeof toolCall.id !== 'string' || typeof toolCall.tool_name !== 'string') {
+            console.warn('Ignoring malformed remote tool call payload');
+            return;
+        }
+
+        const {
+            id: call_id,
+            tool_name,
+            tool_args = {},
+            device_id,
+            metadata = {},
+        } = toolCall;
 
         console.debug('[DEBUG] Tool call received, device_id:', device_id, 'this.deviceId:', this.deviceId);
-
-        // Only process jobs for this device
         if (device_id && device_id !== this.deviceId) {
             console.debug('[DEBUG] Ignoring tool call for different device');
             return;
         }
+        if (!this.callDeduplicator.begin(call_id)) {
+            console.warn(`Ignoring duplicate remote tool call ${call_id}`);
+            return;
+        }
 
-        console.log(`🔧 Received tool call ${call_id}: ${tool_name} ${JSON.stringify(tool_args)} metadata: ${JSON.stringify(metadata)}`);
+        console.log(
+            `🔧 Received tool call ${call_id}: ${tool_name} ` +
+            `${compactForLog(tool_args)} metadata: ${compactForLog(metadata, 512)}`
+        );
 
         try {
-            // Update call status to executing
             await this.remoteChannel.markCallExecuting(call_id);
-
             let result;
 
-            // Handle 'ping' tool specially
             if (tool_name === 'ping') {
                 result = {
-                    content: [{
-                        type: 'text',
-                        text: `pong ${new Date().toISOString()}`
-                    }]
+                    content: [{ type: 'text', text: `pong ${new Date().toISOString()}` }]
                 };
             } else if (tool_name === 'shutdown') {
                 result = {
-                    content: [{
-                        type: 'text',
-                        text: `Shutdown initialized at ${new Date().toISOString()}`
-                    }]
+                    content: [{ type: 'text', text: `Shutdown initialized at ${new Date().toISOString()}` }]
                 };
-
-                // Trigger shutdown after sending response
-                setTimeout(async () => {
-                    console.log('🛑 Remote shutdown requested. Exiting...');
-                    await this.shutdown();
-                    process.exit(0);
+                setTimeout(() => {
+                    void (async () => {
+                        console.log('🛑 Remote shutdown requested. Exiting...');
+                        await this.shutdown();
+                        process.exit(0);
+                    })().catch((error: any) => {
+                        console.error('Remote shutdown failed:', error?.message || error);
+                    });
                 }, 1000);
             } else {
-                // Execute other tools using desktop integration
                 result = await this.desktop.callClientTool(tool_name, tool_args, metadata);
             }
 
-            console.log(`✅ Tool call ${tool_name} completed:\r\n ${JSON.stringify(result)}`);
-
-            // Update database with result
+            console.log(`✅ Tool call ${tool_name} completed: ${compactForLog(result)}`);
             await this.remoteChannel.updateCallResult(call_id, 'completed', result);
 
         } catch (error: any) {
-            console.error(`❌ Tool call ${tool_name} failed:`, error.message);
-            await captureRemote('remote_device_tool_call_failed', { error, tool_name });
-            await this.remoteChannel.updateCallResult(call_id, 'failed', null, error.message);
+            console.error(`❌ Tool call ${tool_name} failed:`, error?.message || error);
+            try {
+                await captureRemote('remote_device_tool_call_failed', { error, tool_name });
+            } catch (telemetryError: any) {
+                console.debug('[DEBUG] Failure telemetry was not delivered:', telemetryError?.message || telemetryError);
+            }
+            try {
+                await this.remoteChannel.updateCallResult(
+                    call_id,
+                    'failed',
+                    null,
+                    error?.message || String(error),
+                );
+            } catch (updateError: any) {
+                console.error('Failed to persist remote call failure:', updateError?.message || updateError);
+            }
+        } finally {
+            this.callDeduplicator.finish(call_id);
         }
     }
 
@@ -330,6 +422,9 @@ export class MCPDevice {
         console.debug('[DEBUG] Shutdown initiated for device:', this.deviceId);
 
         try {
+            this.authSubscription?.unsubscribe();
+            await this.sessionSaveQueue;
+
             // Stop heartbeat first to prevent new operations
             console.log('  → Stopping heartbeat...');
             console.debug('[DEBUG] Calling stopHeartbeat()');

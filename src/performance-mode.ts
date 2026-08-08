@@ -3,7 +3,7 @@ import path from 'path';
 export type PluginPerformanceMode = 'legacy-plugin' | 'optimized-plugin';
 
 const LEGACY_ALIASES = new Set(['legacy', 'old', 'legacy-plugin', '0.2.46']);
-const OPTIMIZED_ALIASES = new Set(['optimized', 'new', 'optimized-plugin', '0.2.47']);
+const OPTIMIZED_ALIASES = new Set(['optimized', 'new', 'optimized-plugin', '0.2.47', '0.2.48']);
 
 /**
  * Select the plugin execution profile. Optimized mode is the production default;

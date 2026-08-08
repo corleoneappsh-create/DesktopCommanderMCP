@@ -1,0 +1,157 @@
+{
+  "version": "0.2.48",
+  "generatedAt": "2026-07-31T04:59:43.227Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "x64",
+    "node": "v22.23.0"
+  },
+  "tests": {
+    "fullRegression": {
+      "total": 54,
+      "passed": 54,
+      "failed": 0,
+      "durationMs": 256662.0
+    },
+    "longSessionFocused": "PASS",
+    "threeModeEnforced": "PASS",
+    "productionNpmAudit": {
+      "totalVulnerabilities": 0
+    }
+  },
+  "benchmark": {
+    "version": "0.2.48",
+    "generatedAt": "2026-07-31T04:59:43.227Z",
+    "platform": "darwin",
+    "arch": "x64",
+    "node": "v22.23.0",
+    "repetitions": 7,
+    "modes": {
+      "direct": {
+        "description": "No plugin; direct child_process execution",
+        "shellMedianMs": 81.01,
+        "streamingMedianMs": 0.18
+      },
+      "legacyPlugin": {
+        "description": "Plugin behavior compatible with 0.2.46",
+        "shell": "/bin/zsh",
+        "shellMedianMs": 118.24,
+        "streamingMedianMs": 51.38,
+        "duplicateSearchSessions": 2,
+        "duplicateSearchElapsedMs": 120.39
+      },
+      "optimizedPlugin": {
+        "description": "0.2.48 optimized plugin profile",
+        "shell": "/bin/sh",
+        "shellMedianMs": 101.54,
+        "streamingMedianMs": 18.88,
+        "duplicateSearchSessions": 1,
+        "duplicateSearchElapsedMs": 50.07,
+        "searchReused": true
+      }
+    }
+  },
+  "baselineComparison": {
+    "direct": {
+      "shellMedianMs": {
+        "baseline": 116.82,
+        "final": 81.01,
+        "changePercent": -30.7
+      },
+      "streamingMedianMs": {
+        "baseline": 0.24,
+        "final": 0.18,
+        "changePercent": -25.0
+      }
+    },
+    "legacyPlugin": {
+      "shellMedianMs": {
+        "baseline": 124.21,
+        "final": 118.24,
+        "changePercent": -4.8
+      },
+      "streamingMedianMs": {
+        "baseline": 51.71,
+        "final": 51.38,
+        "changePercent": -0.6
+      },
+      "duplicateSearchElapsedMs": {
+        "baseline": 129.32,
+        "final": 120.39,
+        "changePercent": -6.9
+      }
+    },
+    "optimizedPlugin": {
+      "shellMedianMs": {
+        "baseline": 148.32,
+        "final": 101.54,
+        "changePercent": -31.5
+      },
+      "streamingMedianMs": {
+        "baseline": 35.33,
+        "final": 18.88,
+        "changePercent": -46.6
+      },
+      "duplicateSearchElapsedMs": {
+        "baseline": 104.29,
+        "final": 50.07,
+        "changePercent": -52.0
+      }
+    }
+  },
+  "currentPluginComparison": {
+    "optimizedVsLegacyShellPercent": -14.1,
+    "optimizedVsLegacyStreamingPercent": -63.3,
+    "optimizedVsLegacySearchPercent": -58.4,
+    "legacySearchSessions": 2,
+    "optimizedSearchSessions": 1
+  },
+  "features": [
+    "Atomic TOKEN_REFRESHED persistence with serialized writes",
+    "10 second default wait without terminating the process",
+    "Persistent job registry and per-job output logs",
+    "Read and terminate recovery after agent restart",
+    "Single-instance cross-platform supervisor with live log rotation",
+    "Bounded remote diagnostic logging and reconnect hardening"
+  ],
+  "windowsValidation": {
+    "focusedLongSessionTests": "PASS",
+    "threeModeEnforced": "PASS",
+    "npmInstallAudit": {
+      "totalVulnerabilities": 0
+    },
+    "benchmark": {
+      "version": "0.2.48",
+      "generatedAt": "2026-07-31T05:06:19.257Z",
+      "platform": "win32",
+      "arch": "x64",
+      "node": "v24.18.0",
+      "repetitions": 7,
+      "modes": {
+        "direct": {
+          "description": "No plugin; direct child_process execution",
+          "shellMedianMs": 30.56,
+          "streamingMedianMs": 0.11
+        },
+        "legacyPlugin": {
+          "description": "Plugin behavior compatible with 0.2.46",
+          "shell": "powershell.exe",
+          "shellMedianMs": 133.16,
+          "streamingMedianMs": 62.45,
+          "duplicateSearchSessions": 2,
+          "duplicateSearchElapsedMs": 199.01
+        },
+        "optimizedPlugin": {
+          "description": "0.2.48 optimized plugin profile",
+          "shell": "cmd.exe",
+          "shellMedianMs": 48.4,
+          "streamingMedianMs": 12.71,
+          "duplicateSearchSessions": 1,
+          "duplicateSearchElapsedMs": 34.58,
+          "searchReused": true
+        }
+      }
+    },
+    "sourceCommit": "c237f2f"
+  }
+}
