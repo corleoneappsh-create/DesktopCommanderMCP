@@ -93,7 +93,9 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
 }
 
 export const MAX_INITIAL_RESPONSE_OUTPUT_CHARS = 32 * 1024;
+export const MAX_READ_RESPONSE_OUTPUT_CHARS = 32 * 1024;
 const INITIAL_RESPONSE_HEAD_CHARS = 8 * 1024;
+const READ_RESPONSE_HEAD_CHARS = 8 * 1024;
 
 function limitInitialOutputForClient(output: string): string {
   if (output.length <= MAX_INITIAL_RESPONSE_OUTPUT_CHARS) return output;
@@ -102,6 +104,16 @@ function limitInitialOutputForClient(output: string): string {
   return `${output.slice(0, INITIAL_RESPONSE_HEAD_CHARS)}\n` +
     `[INITIAL OUTPUT TRUNCATED: ${omitted} chars omitted from this response; ` +
     `use read_process_output for retained output]\n` +
+    output.slice(-tailChars);
+}
+
+function limitReadOutputForClient(output: string): string {
+  if (output.length <= MAX_READ_RESPONSE_OUTPUT_CHARS) return output;
+  const tailChars = MAX_READ_RESPONSE_OUTPUT_CHARS - READ_RESPONSE_HEAD_CHARS;
+  const omitted = output.length - MAX_READ_RESPONSE_OUTPUT_CHARS;
+  return `${output.slice(0, READ_RESPONSE_HEAD_CHARS)}\n` +
+    `[PROCESS OUTPUT TRUNCATED FOR CLIENT: ${omitted} chars omitted; retained buffer is unchanged. ` +
+    `Use smaller offset/length windows; for a single huge line, redirect or chunk the producer output.]\n` +
     output.slice(-tailChars);
 }
 
@@ -379,7 +391,9 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
     timingMessage = `\n\n📊 Timing: ${endTime - startTime}ms`;
   }
 
-  const responseText = output || '(No output in requested range)';
+  const responseText = output
+    ? limitReadOutputForClient(output)
+    : '(No output in requested range)';
 
   return {
     content: [{
