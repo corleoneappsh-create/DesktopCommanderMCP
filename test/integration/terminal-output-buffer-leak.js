@@ -34,7 +34,7 @@ import { performance } from 'perf_hooks';
 
 process.env.DESKTOP_COMMANDER_DISABLE_TELEMETRY = 'true';
 
-const { terminalManager, MAX_BUFFERED_OUTPUT_CHARS } = await import('../../dist/terminal-manager.js');
+const { terminalManager, MAX_BUFFERED_OUTPUT_CHARS, MAX_COMPLETED_SESSIONS } = await import('../../dist/terminal-manager.js');
 
 // Slack on top of the cap for one in-flight chunk and force-split separators.
 const BUFFER_CAP_CHARS = MAX_BUFFERED_OUTPUT_CHARS;
@@ -116,6 +116,19 @@ async function main() {
   const sinceSnapshot = terminalManager.getOutputSinceSnapshot(result.pid, snapshot);
   assert.ok(typeof sinceSnapshot === 'string', 'snapshot read should return a string');
   assert.ok(sinceSnapshot.includes(END_MARKER), 'snapshot read should include the newest output');
+
+  // 5. Completed-session retention must stay bounded too. Every completed
+  //    entry retains its output buffer, so an unbounded/high-count history can
+  //    recreate the same long-session memory pressure with many small commands.
+  for (let i = 0; i < MAX_COMPLETED_SESSIONS + 5; i++) {
+    await terminalManager.executeCommand(`node -e \"console.log('retention-${i}')\"`, 5000);
+  }
+  const completedCount = terminalManager.listCompletedSessions().length;
+  assert.strictEqual(
+    completedCount,
+    MAX_COMPLETED_SESSIONS,
+    `completed session cache should be capped at ${MAX_COMPLETED_SESSIONS}`
+  );
 
   const totalEmittedMB = Math.round((FLOOD_CHUNK_CHARS * FLOOD_CHUNKS) / 1024 / 1024);
   console.log(`flood: ${totalEmittedMB} MB emitted, ${(joinedLength / 1024 / 1024).toFixed(1)} MB retained (cap ${BUFFER_CAP_CHARS / 1024 / 1024} MB)`);
