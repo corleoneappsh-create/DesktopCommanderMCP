@@ -94,8 +94,10 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
 
 export const MAX_INITIAL_RESPONSE_OUTPUT_CHARS = 32 * 1024;
 export const MAX_READ_RESPONSE_OUTPUT_CHARS = 32 * 1024;
+export const MAX_INTERACT_RESPONSE_OUTPUT_CHARS = 32 * 1024;
 const INITIAL_RESPONSE_HEAD_CHARS = 8 * 1024;
 const READ_RESPONSE_HEAD_CHARS = 8 * 1024;
+const INTERACT_RESPONSE_HEAD_CHARS = 8 * 1024;
 
 function limitInitialOutputForClient(output: string): string {
   if (output.length <= MAX_INITIAL_RESPONSE_OUTPUT_CHARS) return output;
@@ -114,6 +116,16 @@ function limitReadOutputForClient(output: string): string {
   return `${output.slice(0, READ_RESPONSE_HEAD_CHARS)}\n` +
     `[PROCESS OUTPUT TRUNCATED FOR CLIENT: ${omitted} chars omitted; retained buffer is unchanged. ` +
     `Use smaller offset/length windows; for a single huge line, redirect or chunk the producer output.]\n` +
+    output.slice(-tailChars);
+}
+
+function limitInteractOutputForClient(output: string): string {
+  if (output.length <= MAX_INTERACT_RESPONSE_OUTPUT_CHARS) return output;
+  const tailChars = MAX_INTERACT_RESPONSE_OUTPUT_CHARS - INTERACT_RESPONSE_HEAD_CHARS;
+  const omitted = output.length - MAX_INTERACT_RESPONSE_OUTPUT_CHARS;
+  return `${output.slice(0, INTERACT_RESPONSE_HEAD_CHARS)}\n` +
+    `[INTERACT OUTPUT TRUNCATED FOR CLIENT: ${omitted} chars omitted; process output remains retained. ` +
+    `Use read_process_output with smaller offset/length windows for follow-up inspection.]\n` +
     output.slice(-tailChars);
 }
 
@@ -596,6 +608,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
       const remainingLines = outputLines.length - maxOutputLines;
       truncationMessage = `\n\n⚠️ Output truncated: showing ${maxOutputLines} of ${outputLines.length} lines (${remainingLines} hidden). Use read_process_output with offset/length for full output.`;
     }
+    cleanOutput = limitInteractOutputForClient(cleanOutput);
     
     // Determine final state
     if (!processState) {
