@@ -92,6 +92,19 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
   }
 }
 
+export const MAX_INITIAL_RESPONSE_OUTPUT_CHARS = 32 * 1024;
+const INITIAL_RESPONSE_HEAD_CHARS = 8 * 1024;
+
+function limitInitialOutputForClient(output: string): string {
+  if (output.length <= MAX_INITIAL_RESPONSE_OUTPUT_CHARS) return output;
+  const tailChars = MAX_INITIAL_RESPONSE_OUTPUT_CHARS - INITIAL_RESPONSE_HEAD_CHARS;
+  const omitted = output.length - MAX_INITIAL_RESPONSE_OUTPUT_CHARS;
+  return `${output.slice(0, INITIAL_RESPONSE_HEAD_CHARS)}\n` +
+    `[INITIAL OUTPUT TRUNCATED: ${omitted} chars omitted from this response; ` +
+    `use read_process_output for retained output]\n` +
+    output.slice(-tailChars);
+}
+
 /**
  * Start a new process (renamed from execute_command)
  * Includes early detection of process waiting for input
@@ -182,13 +195,15 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
 
   if (result.pid === -1) {
     return {
-      content: [{ type: "text", text: result.output }],
+      content: [{ type: "text", text: limitInitialOutputForClient(result.output) }],
       isError: true,
     };
   }
 
-  // Analyze the process state to detect if it's waiting for input
+  // Analyze the full wait-phase output for state detection, but cap only the
+  // client-facing copy so one noisy command cannot flood the MCP/Chat context.
   const processState = analyzeProcessState(result.output, result.pid);
+  const clientInitialOutput = limitInitialOutputForClient(result.output);
 
   let statusMessage = '';
   if (processState.isWaitingForInput) {
@@ -208,7 +223,7 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
   return {
     content: [{
       type: "text",
-      text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${result.output}${statusMessage}${timingMessage}`
+      text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${clientInitialOutput}${statusMessage}${timingMessage}`
     }],
   };
 }
