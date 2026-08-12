@@ -54,7 +54,8 @@ interface CompletedSession {
  * The cap also bounds the join() cost in snapshot reads and the periodic
  * process-state scan, both of which are O(total output).
  */
-export const MAX_BUFFERED_OUTPUT_CHARS = 50 * 1024 * 1024;  // per session; oldest lines evicted first
+export const MAX_BUFFERED_OUTPUT_CHARS = 4 * 1024 * 1024;   // low-memory profile; oldest lines evicted first
+export const MAX_COMPLETED_SESSIONS = 20;              // bound retained output from finished commands
 const MAX_LINE_CHARS = 1024 * 1024;                  // force-split longer lines so eviction can work
 const MAX_WAIT_OUTPUT_CHARS = 2 * 1024 * 1024;       // start_process wait buffer (prompt/state detection)
 
@@ -443,8 +444,8 @@ export class TerminalManager {
             evictedChars: session.evictedChars
           });
 
-          // Keep only last 100 completed sessions
-          if (this.completedSessions.size > 100) {
+          // Keep only a bounded tail of completed sessions. Each entry retains output.
+          if (this.completedSessions.size > MAX_COMPLETED_SESSIONS) {
             const oldestKey = Array.from(this.completedSessions.keys())[0];
             this.completedSessions.delete(oldestKey);
           }
